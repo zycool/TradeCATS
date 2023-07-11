@@ -34,7 +34,7 @@ end_time = "22:00:00"  # 程序结束时间
 # ****************
 # 自定义变量
 # ****************
-TARGET_FILE = "D:/Neo/WorkPlace/每日选股结果/2023-06-07.csv"
+TARGET_FILE = "D:/Neo/WorkPlace/每日选股结果/2023-07-10.csv"
 TARGET_POS_NUM = 50
 TRADE_TIME = "13:05"  # 开始交易的时间，默认当天对标的基准交易价对应的时间往后延时1分钟
 FINISH_TIME = '14:45'  # 开始进行收尾的时间，指最后开始扫单&检查赎回金额得时间
@@ -44,6 +44,7 @@ DEBUG = True  # 是否模拟盘
 up_down_limit_set = set()  # 用于存放交易过程中涨跌停得票
 order_list = []  # 用于存放订单数据，策略退出时会自动持久化保存
 TIMER_TRADE = None
+ORDER_STATUS = ["新单(未结)", '部分成交(未结)', '全成(已结)', '部分撤单(已结)', '全撤(已结)', '拒单(已结)']
 # ****************
 # 建立空的基准信息 df_bench，数据列分别为：股票代码，目标持有数量，基准价,是否停牌,是否涨跌停
 # ****************
@@ -141,7 +142,6 @@ def deal_with_init(wait_sec=3):
         log.warn("没停掉，那就是继续咯...")
         log.info('~' * 88)
         return [], [], not_paused_target
-    # print(position_list)
     real_hold_pos_list = [pos_obj.symbol for pos_obj in position_list]
     paused_hold, not_paused_hold = deal_with_paused(real_hold_pos_list)
     if len(paused_hold) > 0:
@@ -172,6 +172,36 @@ def get_total_asset():
     position_list = get_position()
     pos_value = np.array([pos.marketValue for pos in position_list]).sum()  # 查询持仓总市值
     return account_enabledBalance + pos_value + account_frozenBalance, pos_value
+
+
+def save_position_end_time():
+    log.info("~~~进行资产&持仓方面统计~~~")
+    csv_file = LOGS_DIR + "df_position.csv"
+    txt_file = LOGS_DIR + "account.txt"
+    info = cats_api.query_account(acct_type, acct)
+    currentBalance = info.currentBalance  # 当前余额
+    beginBalance = info.beginBalance  # 昨日余额
+    enabledBalance = info.enabledBalance  # 可用数
+    fetchBalance = info.fetchBalance  # 可取数
+    frozenBalance = info.frozenBalance  # 冻结数
+
+    position_list = get_position()
+    pos_value = np.array([pos.marketValue for pos in position_list]).sum()  # 查询持仓总市值
+
+    f = open(txt_file, 'w+')
+    txt = "当前时间：{}\n当前余额：{}\n昨日余额：{}\n可用金额：{}\n可取金额：{}\n冻结金额：{}\n持仓市值：{}\n总资产：{}\n( = 持仓市值 + 当前余额)".format(
+        datetime.datetime.now().isoformat(), currentBalance, beginBalance, enabledBalance, fetchBalance, frozenBalance, pos_value,
+        pos_value + currentBalance
+    )
+    f.writelines(txt)
+    f.close()
+
+    variables = {'symbol': "代码", 'stockName': "名称", 'currentQty': "当前余额", 'enabledQty': "可用数", 'costPrice': "成本价",
+                 'marketValue': "参考市值", 'frozenQty': "冻结数", 'beginQty': "昨日余额", 'realBuyQty': "今日买入", 'realSellQty': "今日卖出"}
+    df = pd.DataFrame([[getattr(pos, j) for j in list(variables.keys())] for pos in position_list], columns=list(variables.values()))
+    df.sort_values("参考市值", ascending=False, inplace=True)
+    df.to_csv(csv_file, index=False)
+    log.info("~~~~已保存统计数据到目录：{}".format(LOGS_DIR))
 
 
 def trade_begin(hold_list, paused_list, target_list):
@@ -234,8 +264,7 @@ def trade_begin(hold_list, paused_list, target_list):
             hold_limited_paused = list(set(limit_list + paused_list))
             real_target_positon = target_list[:TARGET_POS_NUM - len(hold_limited_paused)] + hold_limited_paused
             # 这里只对目标持仓剔除停牌（不剔除涨跌停）得票，进行目标持仓数量得计算，方便后面根据这个发订单
-            df_bench.loc[list(
-                set(real_target_positon) - set(paused_list)), 'target_vol'] = df_bench.target_cap / df_bench.ClosePrice
+            df_bench.loc[list(set(real_target_positon) - set(paused_list)), 'target_vol'] = df_bench.target_cap / df_bench.ClosePrice
             df_bench['target_vol'] = df_bench.target_vol.apply(lambda vol: math.floor(vol / 100) * 100)
 
             buy_list = list(set(real_target_positon) - set(hold_list))
@@ -310,17 +339,18 @@ def trade_running(*args, **kwargs):
         else:
             df_sells['per_price'] = df_sells.bidPrice2 / df_sells.ClosePrice
             df_sells['div_vol'] = df_sells['currentQty'] - df_sells['target_vol']
-            df_sells['trade_vol'] = df_sells.apply(lambda row: int(min(row['div_vol'], row['enabledQty'], row['bidVolume1'])), axis=1)
+            df_sells['trade_vol'] = df_sells.apply(lambda row: int(min(row['div_vol'], row['currentQty'], row['bidVolume1'])), axis=1)
+            df_sells = df_sells[df_sells['trade_vol'] > 0]  # 有可能遇到trade_vol==0的情况
             df_sells_loss = df_sells[df_sells['per_price'] > 1 + loss_cent].copy()
             if not df_sells_loss.empty:
-                log.info('df_sells_loss --->>> 满足最大损失值筛选，对这些票：{}，以买1量&买2价，发卖出单'.format(df_sells_loss.index.tolist()))
+                log.info('df_sells_loss --->>> 满足最大损失值筛选，对这些票：{}，卖出'.format(df_sells_loss.index.tolist()))
                 log.info(df_sells_loss)
                 __my_submit_batch(df_sells_loss, trade_side=2)
             if datetime.datetime.now() > mid_time:
                 df_sells['div_percent'] = df_sells['div_vol'] / df_sells['currentQty']
                 df_sells_time = df_sells[df_sells['div_percent'] > 1 - task_percent].copy()  # 找到时间过半，任务未过半的标的
                 if not df_sells_time.empty:
-                    log.info('找到时间过半，任务未过半的这些票：{}，以买1量&买2价，卖出'.format(df_sells_loss.index.tolist()))
+                    log.info('找到时间过半，任务未过半的这些票：{}，卖出'.format(df_sells_time.index.tolist()))
                     log.info(df_sells_time)
                     __my_submit_batch(df_sells_time, trade_side=2)
 
@@ -336,30 +366,31 @@ def trade_running(*args, **kwargs):
             df_buys['currentQty'] = df_buys.currentQty.apply(lambda v: math.floor(v / 100) * 100)
             df_buys['div_vol'] = df_buys['target_vol'] - df_buys['currentQty']
             df_buys['trade_vol'] = df_buys.apply(lambda row: int(min(row['div_vol'], row['askVolume1'])), axis=1)
+            df_buys = df_buys[df_buys['trade_vol'] > 0]  # 有可能遇到trade_vol==0的情况
             df_buys_loss = df_buys[df_buys['per_price'] < 1 - loss_cent].copy()
             df_buys_time = pd.DataFrame()
             if datetime.datetime.now() > mid_time:
                 df_buys['div_percent'] = df_buys['div_vol'] / df_buys['target_vol']
                 df_buys_time = df_buys[df_buys['div_percent'] > 1 - task_percent].copy()  # 找到时间过半，任务未过半的标的
 
-            enabledBalance = cats_api.query_account(acct_type, acct).enabledBalance
+            currentBalance = cats_api.query_account(acct_type, acct).currentBalance
             if not df_buys_loss.empty:
                 need_money = (df_buys_loss['trade_vol'] * df_buys_loss['askPrice2']).sum()
-                if enabledBalance > need_money:
-                    log.info('df_buys_loss --->>> 满足最大损失值筛选，对这些票：{}，以卖1量&卖2价，发买入单'.format(df_buys.index.tolist()))
+                if currentBalance > need_money:
+                    log.info('df_buys_loss --->>> 满足最大损失值筛选，对这些票：{}，以卖1量&卖2价，发买入单'.format(df_buys_loss.index.tolist()))
                     log.info(df_buys_loss)
                     __my_submit_batch(df_buys_loss, trade_side=1)
                 else:
-                    log.warn('此次买单可用资金不够，发布不出去 --->>> 可用：{}，需要：{}'.format(enabledBalance, need_money))
+                    log.warn('就算满足满足最大损失值，此次买单可用资金不够，买不了 --->>> 可用：{}，需要：{}'.format(currentBalance, need_money))
 
             if not df_buys_time.empty:
-                log.info('找到时间过半，任务未过半的这些票：{}，以买1量&买2价，买进'.format(df_buys_time.index.tolist()))
+                log.info('找到时间过半，任务未过半的这些票，前5：{}，以买1量&买2价，买进'.format(df_buys_time.index.tolist()[:5]))
                 log.info(df_buys_time)
                 need_money = (df_buys_time['trade_vol'] * df_buys_time['askPrice2']).sum()
-                if enabledBalance > need_money:
+                if currentBalance > need_money:
                     __my_submit_batch(df_buys_time, trade_side=1)
                 else:
-                    log.warn('哎呀呀，此次买单可用资金不够，发布不出去 --->>> 可用：{}，需要：{}'.format(enabledBalance, need_money))
+                    log.warn('哎呀呀，此次买单可用资金不够，买不了 --->>> 可用：{}，需要：{}'.format(currentBalance, need_money))
 
         if not (df_sells_limit.empty or df_buys_limit.empty):
             global up_down_limit_set
@@ -409,7 +440,8 @@ def trade_finish(*args, **kwargs):
     log.info("下面是到了收尾时间点，若有还没成交得订单，将被撤回。")
     for i in range(len(orders)):
         if orders[i].status < 2:
-            log.info("~~~~ 这个订单将被撤掉 ---->>> 票:{}, 订单号:{}, 报单量:{}".format(orders[i].symbol, orders[i].orderNo, orders[i].qty))
+            log.info("~~~~ 这个订单将被撤掉 ---->>> 票:{}, 方向:{}, 报单量:{}，状态:{}".format(
+                orders[i].symbol, orders[i].side, orders[i].qty, ORDER_STATUS[orders[i].status]))
             cats_api.cancel_order(acct_type, acct, orders[i].orderNo, None, None)
     time.sleep(10)
     hold_pos = get_position(symbol=None)
@@ -441,9 +473,9 @@ def trade_finish(*args, **kwargs):
         df_sells = df[df['target_vol'] < df['currentQty']].copy()
     log.error("~~~~~~~~~~~~~  有卖出操作的票都已经搞完，下面看看赎回和买入情况  ~~~~~~~~~~~")
     account_info = cats_api.query_account(acct_type, acct)
-    account_enabledBalance = account_info.enabledBalance  # 查询可用资金
-    log.info("目前可用资金：{}，赎回金额：{}".format(account_enabledBalance, redeem_money))
-    avb_money = account_enabledBalance - redeem_money
+    currentBalance = account_info.currentBalance  # 查询可用资金
+    log.info("目前可用资金：{}，赎回金额：{}".format(currentBalance, redeem_money))
+    avb_money = currentBalance - redeem_money
     if avb_money > 10000:
         hold_pos = get_position(symbol=None)
         while len(hold_pos) == 0:
@@ -457,6 +489,8 @@ def trade_finish(*args, **kwargs):
         values = [[pos.currentQty, pos.marketValue] for pos in hold_pos]
         df.loc[codes, ['currentQty', 'marketValue']] = values
         df['div_vol'] = df['target_vol'] - df['currentQty']
+        # log.info("div_vol ------>>>")
+        # log.info(df)
         df['div_vol'] = df.div_vol.apply(lambda v: math.floor(v / 100) * 100)
         df_buys = df[df['div_vol'] > 0].copy()
         if not df_buys.empty:
@@ -506,9 +540,12 @@ def on_order_handler(order_obj, cb_arg):
     报单状态 status 参数说明:0 新单(未结)，1 部分成交(未结)，2 全成(已结)，3 部分撤单(已结)，4 全撤(已结)，5 拒单(已结)
     """
     global order_list
-    log.info("~~~订单回调: [symbol:{}, 订单号:{}, 委托价:{}, 委托量:{}, 方向:{},状态:{}, 成交数量:{}, 成交均价:{}, 取消数量:{}, 时间:{},日期: {}]".
-             format(order_obj.symbol, order_obj.orderNo, order_obj.price, order_obj.qty, order_obj.side, order_obj.status,
-                    order_obj.filledQty, order_obj.avgPrice, order_obj.cancelQty, order_obj.orderTime, order_obj.orderDate))
+    if order_obj.status is [1, 3, 4, 5]:
+        log.info(
+            "订单未成交(或部成): [symbol:{},  委托价:{}, 委托量:{}, 方向:{},状态:{}, 成交数量:{}, 成交均价:{}, 取消数量:{}, 时间:{},日期: {}]".format(
+                order_obj.symbol, order_obj.price, order_obj.qty, order_obj.side, ORDER_STATUS[order_obj.status],
+                order_obj.filledQty, order_obj.avgPrice, order_obj.cancelQty, order_obj.orderTime, order_obj.orderDate))
+
     order_list.append((order_obj.symbol, order_obj.orderNo, order_obj.price, order_obj.qty, order_obj.side, order_obj.status,
                        order_obj.filledQty, order_obj.avgPrice, order_obj.cancelQty, order_obj.orderTime, order_obj.orderDate))
 
@@ -525,7 +562,7 @@ def on_cancel_order_notice_handler(cancelNotice, cb_arg):
 def on_init(argument_dict):
     global df_bench
     log.info('*' * 88)
-    log.info("运行中  第一阶段  --->>> 策略入口")
+    log.info("--->>> 策略入口")
     paused_codes_hold, real_hold_pos_list, targets = deal_with_init(wait_sec=3)
     df_bench['Symbol'] = list(set(targets + real_hold_pos_list))
     df_bench['sorted_no'] = 9999  # 候选票排序序号
@@ -536,30 +573,32 @@ def on_init(argument_dict):
     df_bench['currentQty'] = 0
     df_bench.set_index('Symbol', inplace=True)
 
-    log.info("运行中  第一阶段  --->>> 订阅订单")
+    log.info("运行中  第一阶段  --->>> 订单订阅")
     cats_api.register_cancel_order_notice_cb(on_cancel_order_notice_handler, None)  # 注册撤单拒单通知回调函数
     cats_api.sub_cancel_order_notice()  # 订阅撤单拒单通知
     cats_api.register_order_cb(on_order_handler, None)  # 注册订单状态回调函数
     cats_api.sub_order(acct_type, acct)  # 订阅指定账户底下的订单
 
-    log.info("运行中  第一阶段  --->>> 订阅行情")
+    log.info("运行中  第一阶段  --->>> 行情订阅")
     cats_api.register_realmd_cb(on_realmd_handler, None)  # 注册订阅标的的回调函数
     cats_api.sub_realmd(list(set(targets + real_hold_pos_list)))  # 订阅标的
 
-    if str(datetime.datetime.now().time()) > TRADE_TIME:
-        trade_begin(hold_list=real_hold_pos_list, paused_list=paused_codes_hold, target_list=targets)
-    else:
-        log.info("交易时间为：{}，还没到呢，程序将进入等待状态".format(TRADE_TIME))
-        cats_api.at_day_timer(TRADE_TIME, trade_begin, hold_list=real_hold_pos_list, paused_list=paused_codes_hold, target_list=targets)
+    now_str = str(datetime.datetime.now().time())
+    if now_str < '15:00':
+        if now_str > TRADE_TIME:
+            trade_begin(hold_list=real_hold_pos_list, paused_list=paused_codes_hold, target_list=targets)
+        else:
+            log.info("交易时间为：{}，还没到呢，程序将进入等待状态".format(TRADE_TIME))
+            cats_api.at_day_timer(TRADE_TIME, trade_begin, hold_list=real_hold_pos_list, paused_list=paused_codes_hold, target_list=targets)
 
-    if str(datetime.datetime.now().time()) > FINISH_TIME:
-        trade_finish()
+        if now_str > FINISH_TIME:
+            trade_finish()
+        else:
+            log.info("收尾时间为：{}，还没到呢，程序将进入等待状态".format(FINISH_TIME))
+            cats_api.at_day_timer(FINISH_TIME, trade_finish)
     else:
-        log.info("收尾时间为：{}，还没到呢，程序将进入等待状态".format(FINISH_TIME))
-        cats_api.at_day_timer(FINISH_TIME, trade_finish)
-
-    if str(datetime.datetime.now().time()) > '15:00':
-        log.info("已经收盘，将自动退出交易，去看交易日志吧！")
+        log.info("已经收盘，将执行收盘统计模块，去看交易日志吧！")
+        save_position_end_time()
         cats_api.stop_strategy_framework()
 
     return
