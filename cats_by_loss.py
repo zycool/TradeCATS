@@ -262,12 +262,12 @@ def trade_begin(hold_list, paused_list, target_list):
 
 def __my_submit_batch(df_to_submit, trade_side=1):
     codes = df_to_submit.index.tolist()
-    if trade_side == 1:
+    if trade_side == 1:  # 买入
         cats_api.submit_batch_order([acct_type for _ in range(len(codes))], [acct for _ in range(len(codes))], codes,
                                     [1 for _ in range(len(codes))], [0 for _ in range(len(codes))],
-                                    df_to_submit.askPrice2.tolist(), df_to_submit.askVolume1.tolist(),
+                                    df_to_submit.askPrice2.tolist(), df_to_submit.trade_vol.tolist(),
                                     None, on_batch_order_handler, None)
-    elif trade_side == 2:
+    elif trade_side == 2:  # 卖出
         cats_api.submit_batch_order([acct_type for _ in range(len(codes))], [acct for _ in range(len(codes))], codes,
                                     [2 for _ in range(len(codes))], [0 for _ in range(len(codes))],
                                     df_to_submit.bidPrice2.tolist(), df_to_submit.trade_vol.tolist(), None, on_batch_order_handler, None)

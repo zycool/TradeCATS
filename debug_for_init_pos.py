@@ -26,13 +26,14 @@ pd.set_option('expand_frame_repr', False)
 # ===============
 acct_type = "S0"  # 账户类型和账户
 acct = "shutdown"
-start_time = "9:30:00"  # 程序开始运行时间
+start_time = "09:00:00"  # 程序开始运行时间
 end_time = "10:00:00"  # 程序结束时间
 # ****************
 # 自定义变量
 # ****************
-TARGET_FILE = "D:/Neo/WorkPlace/每日选股结果/2023-06-07.csv"
+TARGET_FILE = "D:/Neo/WorkPlace/每日选股结果/2023-07-07.csv"
 TARGET_POS_NUM = 50
+TRADE_TIME = "09:31"
 new_order_interval = 0.2  # 每次下单的时间间隔,单位分钟
 up_down_limit_set = set()  # 用于存放交易过程中涨跌停得票
 TIMER_TRADE = None
@@ -132,11 +133,12 @@ def trade_begin(target_list):
     pkl_file = LOGS_DIR + "df_init.pkl"
     if os.path.exists(pkl_file):
         log.error("有仓位初始化呀，请检查：{}".format(pkl_file))
+        df_bench = pd.read_pickle(pkl_file)
     else:
         log.info("仓位初始化开始。。。")
 
         total_cap, pos_cap = get_total_asset()
-        log.info("目前总资产：{}，持仓总市值：{}".format(total_cap, pos_cap, ))
+        log.info("目前总资产：{}，持仓总市值：{}".format(total_cap, pos_cap))
 
         df = cats_api.get_today_last_min1_bar(target_list)
         df = df[['Symbol', 'Date', 'Time', 'ClosePrice']].copy()
@@ -146,7 +148,7 @@ def trade_begin(target_list):
             if len(codes) > 0:
                 log.error("注意：这些未停牌的票未拉取到基准收盘价！--->>> {}".format(codes))
         df.set_index('Symbol', inplace=True)
-        df_bench = df.copy()
+        df_bench = pd.merge(df, df_bench, how='outer', left_index=True, right_index=True)
 
         log.info("开始计算目标组合中各票持仓数量目标")
         per_stk_cap = total_cap / TARGET_POS_NUM
@@ -161,9 +163,9 @@ def trade_begin(target_list):
         df_bench.to_pickle(pkl_file)
         log.info('已完成下单前的各种骚操作，马上建仓。。。')
 
-        global TIMER_TRADE
-        log.info('~~~~开启交易线程，每隔 {} 分钟执行一次交易条件'.format(new_order_interval))
-        TIMER_TRADE = cats_api.minute_timer(new_order_interval, trade_running)
+    global TIMER_TRADE
+    log.info('~~~~开启交易线程，每隔 {} 分钟执行一次交易条件'.format(new_order_interval))
+    TIMER_TRADE = cats_api.minute_timer(new_order_interval, trade_running)
 
 
 def __my_submit_batch(df_to_submit, trade_side=1):
@@ -191,7 +193,6 @@ def trade_running(*args, **kwargs):
         df_buy_order = df_init[df_init['limit'] < 1]  # 剔除基准时间后涨跌停的票
         if not df_buy_order.empty:
             __my_submit_batch(df_buy_order, trade_side=1)
-
     else:
         codes = [pos.symbol for pos in hold_pos]
         qtys = [[pos.currentQty, pos.enabledQty] for pos in hold_pos]
@@ -199,8 +200,11 @@ def trade_running(*args, **kwargs):
         # 以当前这个时间截面数据进行交易判断，且先做卖单，后面才有钱买
 
         df_buys = df_bench[df_bench['target_vol'] > df_bench['currentQty']].copy()
-        df_buys_limit = df_buys[df_buys['limit'] > 0]
+        df_buy_order = df_buys[df_buys['limit'] < 1]
+        if not df_buy_order.empty:
+            __my_submit_batch(df_buy_order, trade_side=1)
 
+        df_buys_limit = df_buys[df_buys['limit'] > 0]
         if not df_buys_limit.empty:
             global up_down_limit_set
             tmp_set = df_buys_limit.index.tolist()
@@ -304,7 +308,11 @@ def on_init(argument_dict):
     cats_api.register_realmd_cb(on_realmd_handler, None)  # 注册订阅标的的回调函数
     cats_api.sub_realmd(targets)  # 订阅标的
 
-    trade_begin(target_list=targets)
+    if str(datetime.datetime.now().time()) > TRADE_TIME:
+        trade_begin(target_list=targets)
+    else:
+        log.info("交易时间为：{}，还没到呢，程序将进入等待状态".format(TRADE_TIME))
+        cats_api.at_day_timer(TRADE_TIME, trade_begin, target_list=targets)
 
     return
 
