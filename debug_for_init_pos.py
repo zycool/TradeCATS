@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """
 @author: Neo
 @software: PyCharm
@@ -27,12 +27,13 @@ pd.set_option('expand_frame_repr', False)
 acct_type = "S0"  # 账户类型和账户
 acct = "shutdown"
 start_time = "09:00:00"  # 程序开始运行时间
-end_time = "10:00:00"  # 程序结束时间
+end_time = "11:00:00"  # 程序结束时间
 # ****************
 # 自定义变量
 # ****************
-TARGET_FILE = "D:/Neo/WorkPlace/每日选股结果/2023-07-07.csv"
+TARGET_FILE = "D:/Neo/WorkPlace/每日选股结果/2023-07-14.csv"
 TARGET_POS_NUM = 50
+START_POS_NUM = 100
 TRADE_TIME = "09:31"
 new_order_interval = 0.2  # 每次下单的时间间隔,单位分钟
 up_down_limit_set = set()  # 用于存放交易过程中涨跌停得票
@@ -82,7 +83,7 @@ def deal_with_init(wait_sec=3):
     log.info('*' * 88)
     log.info("第一步：拿到目标持仓，剔除停牌；文件：{}".format(TARGET_FILE[-14:]))
     init_num = int(TARGET_POS_NUM * 1.4)
-    targets = pd.read_csv(TARGET_FILE).code.map(lambda x: x[2:] + '.' + x[:2]).tolist()[:init_num]
+    targets = pd.read_csv(TARGET_FILE).code.map(lambda x: x[2:] + '.' + x[:2]).tolist()[START_POS_NUM:START_POS_NUM + init_num]
     log.info('选定候选股票池长度为：{}'.format(len(targets)))
 
     paused_target, not_paused_target = deal_with_paused(targets)
@@ -165,6 +166,7 @@ def trade_begin(target_list):
 
     global TIMER_TRADE
     log.info('~~~~开启交易线程，每隔 {} 分钟执行一次交易条件'.format(new_order_interval))
+    trade_running()
     TIMER_TRADE = cats_api.minute_timer(new_order_interval, trade_running)
 
 
@@ -201,7 +203,13 @@ def trade_running(*args, **kwargs):
 
         df_buys = df_bench[df_bench['target_vol'] > df_bench['currentQty']].copy()
         df_buy_order = df_buys[df_buys['limit'] < 1]
+
         if not df_buy_order.empty:
+            currentBalance = cats_api.query_account(acct_type, acct).currentBalance
+            if currentBalance < 100000:
+                log.info("钱钱不够了，退出交易。。。")
+                cats_api.stop_strategy_framework()
+
             __my_submit_batch(df_buy_order, trade_side=1)
 
         df_buys_limit = df_buys[df_buys['limit'] > 0]

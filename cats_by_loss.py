@@ -34,11 +34,12 @@ end_time = "22:00:00"  # 程序结束时间
 # ****************
 # 自定义变量
 # ****************
-TARGET_FILE = "D:/Neo/WorkPlace/每日选股结果/2023-07-10.csv"
+TARGET_FILE = "D:/Neo/WorkPlace/每日选股结果/2023-07-17.csv"
 TARGET_POS_NUM = 50
+START_POS_NUM = 100
 TRADE_TIME = "13:05"  # 开始交易的时间，默认当天对标的基准交易价对应的时间往后延时1分钟
 FINISH_TIME = '14:45'  # 开始进行收尾的时间，指最后开始扫单&检查赎回金额得时间
-redeem_money = 20000  # 赎回的金额，无赎回时默认20000
+redeem_money = 100000  # 赎回的金额，无赎回时默认20000
 new_order_interval = 0.5  # 每次下单的时间间隔,单位分钟
 DEBUG = True  # 是否模拟盘
 up_down_limit_set = set()  # 用于存放交易过程中涨跌停得票
@@ -126,7 +127,7 @@ def deal_with_init(wait_sec=3):
     log.info('*' * 88)
     log.info("第一步：拿到目标持仓，剔除停牌；文件：{}".format(TARGET_FILE[-14:]))
     init_num = int(TARGET_POS_NUM * 1.4)
-    targets = pd.read_csv(TARGET_FILE).code.map(lambda x: x[2:] + '.' + x[:2]).tolist()[:init_num]
+    targets = pd.read_csv(TARGET_FILE).code.map(lambda x: x[2:] + '.' + x[:2]).tolist()[START_POS_NUM:START_POS_NUM + init_num]
     log.info('选定候选股票池长度为：{}'.format(len(targets)))
 
     paused_target, not_paused_target = deal_with_paused(targets)
@@ -175,6 +176,7 @@ def get_total_asset():
 
 
 def save_position_end_time():
+    log.info("已经收盘，将执行收盘统计模块，等下去看交易日志吧！")
     log.info("~~~进行资产&持仓方面统计~~~")
     csv_file = LOGS_DIR + "df_position.csv"
     txt_file = LOGS_DIR + "account.txt"
@@ -201,7 +203,9 @@ def save_position_end_time():
     df = pd.DataFrame([[getattr(pos, j) for j in list(variables.keys())] for pos in position_list], columns=list(variables.values()))
     df.sort_values("参考市值", ascending=False, inplace=True)
     df.to_csv(csv_file, index=False)
-    log.info("~~~~已保存统计数据到目录：{}".format(LOGS_DIR))
+    log.info("~~~~已保存统计数据到目录：{}，3秒后程序将退出".format(LOGS_DIR))
+    time.sleep(3)
+    cats_api.stop_strategy_framework()
 
 
 def trade_begin(hold_list, paused_list, target_list):
@@ -216,7 +220,7 @@ def trade_begin(hold_list, paused_list, target_list):
     每次查询的数量不能超过 200 支标的，如果超过 200 则会报错
     """
     global df_bench
-
+    txt_file = LOGS_DIR + "换仓数据.txt"
     pkl_file = LOGS_DIR + "df_bench.pkl"
     if os.path.exists(pkl_file):
         log.info("已到达交易时间：{}，今日运行过交易，直接进入  --->>> 运行中  第二阶段".format(TRADE_TIME))
@@ -268,13 +272,19 @@ def trade_begin(hold_list, paused_list, target_list):
             df_bench['target_vol'] = df_bench.target_vol.apply(lambda vol: math.floor(vol / 100) * 100)
 
             buy_list = list(set(real_target_positon) - set(hold_list))
+            buy_list.sort()
             sell_list = list(set(hold_list) - set(real_target_positon))
+            sell_list.sort()
             log.info('买入股票数为：{}，具体：{}'.format(len(buy_list), buy_list))
             log.info('卖出股票数为：{}，具体：{}'.format(len(sell_list), sell_list))
             log.info('要进行rebalance的票数为：{}'.format(TARGET_POS_NUM - len(sell_list)))
             log.info('接着将对 df_bench 持久化为：{}'.format(pkl_file))
             df_bench.to_pickle(pkl_file)
             log.info('已完成下单前的各种骚操作，马上就是见证奇迹的时候啦。。。')
+            f = open(txt_file, 'w+')
+            txt = "当前时间：{}\n买入股票为：{}\n卖出股票为：{}\n".format(datetime.datetime.now().isoformat(), buy_list, sell_list)
+            f.writelines(txt)
+            f.close()
         except ZeroDivisionError:
             log.error("注意：目标持仓量：{}，目前持仓中停牌量-涨跌停量：{} - {}，三者相减已经么得可交易得啦。。。".format(
                 TARGET_POS_NUM, len(paused_list), len(limit_list)))
@@ -472,6 +482,7 @@ def trade_finish(*args, **kwargs):
         df = df_bench[df_bench['limit'] < 1]
         df_sells = df[df['target_vol'] < df['currentQty']].copy()
     log.error("~~~~~~~~~~~~~  有卖出操作的票都已经搞完，下面看看赎回和买入情况  ~~~~~~~~~~~")
+    time.sleep(15)  # 持仓信息查询有10S的延迟
     account_info = cats_api.query_account(acct_type, acct)
     currentBalance = account_info.currentBalance  # 查询可用资金
     log.info("目前可用资金：{}，赎回金额：{}".format(currentBalance, redeem_money))
@@ -487,21 +498,54 @@ def trade_finish(*args, **kwargs):
 
         codes = [pos.symbol for pos in hold_pos]
         values = [[pos.currentQty, pos.marketValue] for pos in hold_pos]
-        df.loc[codes, ['currentQty', 'marketValue']] = values
+        df.loc[codes, ['currentQty', 'marketValue']] = values  # 有提前涨跌停的情况，这里有可能会报错
         df['div_vol'] = df['target_vol'] - df['currentQty']
-        # log.info("div_vol ------>>>")
-        # log.info(df)
+        log.info("div_vol ------>>>")
+        log.info(df)
         df['div_vol'] = df.div_vol.apply(lambda v: math.floor(v / 100) * 100)
         df_buys = df[df['div_vol'] > 0].copy()
-        if not df_buys.empty:
-            log.warn("我去，还有买方目标仓位没到位的~~~~~~~~~~~")
-            df_buys['trade_vol'] = ((avb_money / df_buys.size) / df_buys['askPrice2']) // 100
+        while not df_buys.empty:
+            log.warn("我去，还有买方目标仓位没到位的~~~~~~~~~~~先把价差少的买了来")
+            df_buys['trade_vol'] = df_buys.apply(
+                lambda row: int(min(row['div_vol'], row['askVolume1'], ((avb_money / row['askPrice2']) // 100) * 100)), axis=1)
+            log.info(df_buys)
+            df_buys.sort_values('per_price', inplace=True)
+            df_to_buy = df_buys.head(1)
+            log.info("~~还有多余资金：{}，这次将先买这个~~~~~~~~~~~".format(avb_money))
+            log.info(df_to_buy)
+
+            __my_submit_batch(df_to_buy, trade_side=1)
+
+            time.sleep(15)  # 持仓信息查询有10S的延迟
+            account_info = cats_api.query_account(acct_type, acct)
+            currentBalance = account_info.currentBalance  # 查询可用资金
+            log.info("目前可用资金：{}，赎回金额：{}".format(currentBalance, redeem_money))
+            avb_money = currentBalance - redeem_money
+            if avb_money > 10000:
+                hold_pos = get_position(symbol=None)
+                while len(hold_pos) == 0:
+                    log.error("什么鬼，收尾阶段没拿到持仓信息，等10后再试试~~~~~~~~~~~")
+                    time.sleep(10)
+                df = df_bench[df_bench['limit'] < 1].copy()
+                df['per_price'] = df.askPrice2 / df.ClosePrice
+                df['marketValue'] = 0
+
+                codes = [pos.symbol for pos in hold_pos]
+                values = [[pos.currentQty, pos.marketValue] for pos in hold_pos]
+                df.loc[codes, ['currentQty', 'marketValue']] = values  # 有提前涨跌停的情况，这里有可能会报错
+                df['div_vol'] = df['target_vol'] - df['currentQty']
+                log.info("div_vol ------>>>")
+                log.info(df)
+                df['div_vol'] = df.div_vol.apply(lambda v: math.floor(v / 100) * 100)
+                df_buys = df[df['div_vol'] > 0].copy()
+
         else:
-            df_buys = df.sort_values('per_price').iloc[:2].copy()
-            df_buys['trade_vol'] = ((avb_money / df_buys.size) / df_buys['askPrice2']) // 100
-        buy_list = df_buys.index.tolist()
-        log.info("~~~~~~~~~多余资金：{}，将平均的买入以下几只票：{}~~~~~~~~~~~".format(avb_money, buy_list))
-        __my_submit_batch(df_buys, trade_side=1)
+            df_buys = df.sort_values('per_price').iloc[:3].copy()
+            log.info("~~多余资金：{}，将平均的买入以下3只票：{}~~~~~~~~~~~".format(avb_money, df_buys))
+            log.info(df_buys)
+            df_buys['trade_vol'] = (((avb_money / len(df_buys)) / df_buys['askPrice2']) // 100) * 100
+            log.info(df_buys)
+            __my_submit_batch(df_buys, trade_side=1)
 
 
 # ****************
@@ -596,11 +640,9 @@ def on_init(argument_dict):
         else:
             log.info("收尾时间为：{}，还没到呢，程序将进入等待状态".format(FINISH_TIME))
             cats_api.at_day_timer(FINISH_TIME, trade_finish)
+        cats_api.at_day_timer("15:02", save_position_end_time)
     else:
-        log.info("已经收盘，将执行收盘统计模块，去看交易日志吧！")
         save_position_end_time()
-        cats_api.stop_strategy_framework()
-
     return
 
 
