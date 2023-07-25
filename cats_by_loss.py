@@ -34,10 +34,10 @@ end_time = "22:00:00"  # 程序结束时间
 # ****************
 # 自定义变量
 # ****************
-TARGET_FILE = "D:/Neo/WorkPlace/每日选股结果/2023-07-17.csv"
+TARGET_FILE = "D:/Neo/WorkPlace/每日选股结果/2023-07-24.csv"
 TARGET_POS_NUM = 50
 START_POS_NUM = 100
-TRADE_TIME = "13:05"  # 开始交易的时间，默认当天对标的基准交易价对应的时间往后延时1分钟
+TRADE_TIME = "10:00"  # 开始交易的时间，默认当天对标的基准交易价对应的时间往后延时1分钟
 FINISH_TIME = '14:45'  # 开始进行收尾的时间，指最后开始扫单&检查赎回金额得时间
 redeem_money = 100000  # 赎回的金额，无赎回时默认20000
 new_order_interval = 0.5  # 每次下单的时间间隔,单位分钟
@@ -291,6 +291,7 @@ def trade_begin(hold_list, paused_list, target_list):
             cats_api.stop_strategy_framework()
 
     log.info('可参与交易的票DF形状：{}'.format(df_bench.shape))
+    # df_target=df_bench[df_bench['target_vol'] > 0].sort_values('sorted_no')
     log.info('目标组合DF形状：{}'.format(df_bench[df_bench['target_vol'] > 0].shape))
 
     global TIMER_TRADE
@@ -333,7 +334,6 @@ def trade_running(*args, **kwargs):
             log.info('发现了可交易机会 --->>>')
             log.info(df_buy_order)
             __my_submit_batch(df_buy_order, trade_side=1)
-
     else:
         codes = [pos.symbol for pos in hold_pos]
         qtys = [[pos.currentQty, pos.enabledQty] for pos in hold_pos]
@@ -392,9 +392,24 @@ def trade_running(*args, **kwargs):
                     __my_submit_batch(df_buys_loss, trade_side=1)
                 else:
                     log.warn('就算满足满足最大损失值，此次买单可用资金不够，买不了 --->>> 可用：{}，需要：{}'.format(currentBalance, need_money))
+                    # todo:这种情况下还可以做一次配对算法交易，先是用可用资金买入最有利润的那2只票，其次
+                    df_buys_loss.sort_values('per_price', ascending=True, inplace=True)
+                    df_buy_stks = df_buys_loss.head(2)
+                    buy_money = currentBalance - redeem_money
+                    need_money = (df_buy_stks['trade_vol'] * df_buy_stks['askPrice2']).sum()
+                    if buy_money > need_money:
+                        log.info(' --->>> 还好买这两只票：{}的钱钱还是有的，以卖1量&卖2价，发买入单'.format(df_buy_stks.index.tolist()))
+                        log.info(df_buy_stks)
+                        __my_submit_batch(df_buy_stks, trade_side=1)
+                    if not df_sells.empty:
+                        df_sells.sort_values('per_price', ascending=False, inplace=True)
+                        df_sell_stk = df_sells.head(1)
+                        log.info(' --->>> per_price 最大的票：{}，卖出'.format(df_sell_stk.index.tolist()))
+                        log.info(df_sell_stk)
+                        __my_submit_batch(df_sell_stk, trade_side=2)
 
             if not df_buys_time.empty:
-                log.info('找到时间过半，任务未过半的这些票，前5：{}，以买1量&买2价，买进'.format(df_buys_time.index.tolist()[:5]))
+                log.info('找到时间过半，任务未过半的这些票，前5：{}，以卖1量&卖2价，买进'.format(df_buys_time.index.tolist()[:5]))
                 log.info(df_buys_time)
                 need_money = (df_buys_time['trade_vol'] * df_buys_time['askPrice2']).sum()
                 if currentBalance > need_money:
@@ -402,8 +417,9 @@ def trade_running(*args, **kwargs):
                 else:
                     log.warn('哎呀呀，此次买单可用资金不够，买不了 --->>> 可用：{}，需要：{}'.format(currentBalance, need_money))
 
-        if not (df_sells_limit.empty or df_buys_limit.empty):
+        if (not df_sells_limit.empty) or (not df_buys_limit.empty):
             global up_down_limit_set
+            log.warn("--->>> up_down_limit_set = {}".format(up_down_limit_set))
             tmp_set = set(df_sells_limit.index.tolist() + df_buys_limit.index.tolist())
             if not opr.eq(up_down_limit_set, tmp_set):
                 log.warn("交易过程中，有新的涨跌停情况发生，故又要重算目标持仓")
@@ -412,6 +428,7 @@ def trade_running(*args, **kwargs):
                     df_tmp = df_bench[(df_bench['paused'] < 1) & (df_bench['limit'] < 1)].copy()
                     limit_list = df_bench[df_bench.limit > 0].index.unique().tolist()
                     df_tmp.sort_values('sorted_no', inplace=True)
+                    log.info(df_tmp)
 
                     paused_pos_cap = 0
                     if len(paused_list) > 0:
@@ -481,7 +498,7 @@ def trade_finish(*args, **kwargs):
         df_bench.loc[codes, ['currentQty', 'enabledQty']] = qtys
         df = df_bench[df_bench['limit'] < 1]
         df_sells = df[df['target_vol'] < df['currentQty']].copy()
-    log.error("~~~~~~~~~~~~~  有卖出操作的票都已经搞完，下面看看赎回和买入情况  ~~~~~~~~~~~")
+    log.info("~~~~~~~~~~~~~  需要卖出操作的票都已经搞完，下面看看赎回和买入情况  ~~~~~~~~~~~")
     time.sleep(15)  # 持仓信息查询有10S的延迟
     account_info = cats_api.query_account(acct_type, acct)
     currentBalance = account_info.currentBalance  # 查询可用资金
@@ -508,10 +525,9 @@ def trade_finish(*args, **kwargs):
             log.warn("我去，还有买方目标仓位没到位的~~~~~~~~~~~先把价差少的买了来")
             df_buys['trade_vol'] = df_buys.apply(
                 lambda row: int(min(row['div_vol'], row['askVolume1'], ((avb_money / row['askPrice2']) // 100) * 100)), axis=1)
-            log.info(df_buys)
             df_buys.sort_values('per_price', inplace=True)
             df_to_buy = df_buys.head(1)
-            log.info("~~还有多余资金：{}，这次将先买这个~~~~~~~~~~~".format(avb_money))
+            log.info("--->>> 多余资金：{}，将先买这个~~~~~~~~~~~".format(avb_money))
             log.info(df_to_buy)
 
             __my_submit_batch(df_to_buy, trade_side=1)
@@ -538,14 +554,27 @@ def trade_finish(*args, **kwargs):
                 log.info(df)
                 df['div_vol'] = df.div_vol.apply(lambda v: math.floor(v / 100) * 100)
                 df_buys = df[df['div_vol'] > 0].copy()
-
         else:
-            df_buys = df.sort_values('per_price').iloc[:3].copy()
-            log.info("~~多余资金：{}，将平均的买入以下3只票：{}~~~~~~~~~~~".format(avb_money, df_buys))
-            log.info(df_buys)
-            df_buys['trade_vol'] = (((avb_money / len(df_buys)) / df_buys['askPrice2']) // 100) * 100
-            log.info(df_buys)
-            __my_submit_batch(df_buys, trade_side=1)
+            while avb_money > 10000:
+                log.info("--->>> 买方目标仓位已全部到位，还有多余资金：{}，将平均的买入以下 2 只票~~~~~~~~~~~".format(avb_money))
+                df_buys = df[df['target_vol'] > 0].sort_values('per_price').iloc[:2].copy()
+                log.info(df_buys)
+                df_buys['trade_vol'] = (((avb_money / len(df_buys)) / df_buys['askPrice2']) // 100) * 100
+                log.info(df_buys)
+                __my_submit_batch(df_buys, trade_side=1)
+
+                time.sleep(15)  # 等待15S，未成交的全部撤掉
+                orders = cats_api.query_order(acct_type, acct)
+                for i in range(len(orders)):
+                    if orders[i].status < 2:
+                        log.info("~~~~ 这个订单将被撤掉 ---->>> 票:{}, 方向:{}, 报单量:{}，状态:{}".format(
+                            orders[i].symbol, orders[i].side, orders[i].qty, ORDER_STATUS[orders[i].status]))
+                        cats_api.cancel_order(acct_type, acct, orders[i].orderNo, None, None)
+                time.sleep(15)  # 等待撤单反馈
+
+                account_info = cats_api.query_account(acct_type, acct)
+                currentBalance = account_info.currentBalance  # 查询可用资金
+                avb_money = currentBalance - redeem_money
 
 
 # ****************
@@ -638,7 +667,7 @@ def on_init(argument_dict):
         if now_str > FINISH_TIME:
             trade_finish()
         else:
-            log.info("收尾时间为：{}，还没到呢，程序将进入等待状态".format(FINISH_TIME))
+            log.info("收尾时间为：{}，还没到".format(FINISH_TIME))
             cats_api.at_day_timer(FINISH_TIME, trade_finish)
         cats_api.at_day_timer("15:02", save_position_end_time)
     else:
