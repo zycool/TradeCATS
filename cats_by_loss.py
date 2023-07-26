@@ -34,12 +34,12 @@ end_time = "22:00:00"  # 程序结束时间
 # ****************
 # 自定义变量
 # ****************
-TARGET_FILE = "D:/Neo/WorkPlace/每日选股结果/2023-07-24.csv"
+TARGET_FILE = "D:/Neo/WorkPlace/每日选股结果/2023-07-25.csv"
 TARGET_POS_NUM = 50
 START_POS_NUM = 100
 TRADE_TIME = "10:00"  # 开始交易的时间，默认当天对标的基准交易价对应的时间往后延时1分钟
 FINISH_TIME = '14:45'  # 开始进行收尾的时间，指最后开始扫单&检查赎回金额得时间
-redeem_money = 100000  # 赎回的金额，无赎回时默认20000
+redeem_money = 50000  # 赎回的金额，无赎回时默认20000
 new_order_interval = 0.5  # 每次下单的时间间隔,单位分钟
 DEBUG = True  # 是否模拟盘
 up_down_limit_set = set()  # 用于存放交易过程中涨跌停得票
@@ -463,8 +463,9 @@ def trade_finish(*args, **kwargs):
     global TIMER_TRADE, df_bench
     cats_api.cancel_timer(TIMER_TRADE)
     time.sleep(10)
+
     orders = cats_api.query_order(acct_type, acct)
-    log.info("下面是到了收尾时间点，若有还没成交得订单，将被撤回。")
+    log.info("已到了收尾时间点，若有还没成交得订单，将被撤回。")
     for i in range(len(orders)):
         if orders[i].status < 2:
             log.info("~~~~ 这个订单将被撤掉 ---->>> 票:{}, 方向:{}, 报单量:{}，状态:{}".format(
@@ -557,11 +558,11 @@ def trade_finish(*args, **kwargs):
         else:
             while avb_money > 10000:
                 log.info("--->>> 买方目标仓位已全部到位，还有多余资金：{}，将平均的买入以下 2 只票~~~~~~~~~~~".format(avb_money))
-                df_buys = df[df['target_vol'] > 0].sort_values('per_price').iloc[:2].copy()
-                log.info(df_buys)
-                df_buys['trade_vol'] = (((avb_money / len(df_buys)) / df_buys['askPrice2']) // 100) * 100
-                log.info(df_buys)
-                __my_submit_batch(df_buys, trade_side=1)
+                df_to_buy = df[df['target_vol'] > 0].sort_values('per_price').iloc[:2].copy()
+                df_to_buy['trade_vol'] = (((avb_money / len(df_to_buy)) / df_to_buy['askPrice2']) // 100) * 100
+                log.info(df_to_buy)
+
+                __my_submit_batch(df_to_buy, trade_side=1)
 
                 time.sleep(15)  # 等待15S，未成交的全部撤掉
                 orders = cats_api.query_order(acct_type, acct)

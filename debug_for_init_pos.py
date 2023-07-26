@@ -31,7 +31,7 @@ end_time = "11:00:00"  # 程序结束时间
 # ****************
 # 自定义变量
 # ****************
-TARGET_FILE = "D:/Neo/WorkPlace/每日选股结果/2023-07-21.csv"
+TARGET_FILE = "D:/Neo/WorkPlace/每日选股结果/2023-07-24.csv"
 TARGET_POS_NUM = 50
 START_POS_NUM = 100
 TRADE_TIME = "09:31"
